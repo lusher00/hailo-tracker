@@ -1,25 +1,17 @@
 #!/bin/bash
 set -e
 
-echo "🗑️  Uninstalling Hailo Cat Tracker service..."
+SERVICE_NAME="hailo-tracker"
 
-# Stop and disable service
-echo "⏹️  Stopping service..."
-sudo systemctl stop hailo-cat-tracker 2>/dev/null || true
-sudo systemctl disable hailo-cat-tracker 2>/dev/null || true
+echo "Uninstalling ${SERVICE_NAME}..."
 
-# Remove service file
-echo "🗑️  Removing service file..."
-sudo rm -f /etc/systemd/system/hailo-cat-tracker.service
-
-# Reload systemd
-echo "🔄 Reloading systemd..."
+sudo systemctl stop ${SERVICE_NAME} 2>/dev/null || true
+sudo systemctl disable ${SERVICE_NAME} 2>/dev/null || true
+sudo rm -f /etc/systemd/system/${SERVICE_NAME}.service
 sudo systemctl daemon-reload
 
-# Note: We don't remove udev rules as they might be used by other apps
 echo ""
-echo "✅ Service uninstalled!"
-echo ""
-echo "ℹ️  Note: udev rules (/etc/udev/rules.d/99-hailo.rules) were kept"
-echo "   Remove manually if no longer needed: sudo rm /etc/udev/rules.d/99-hailo.rules"
+echo "Service removed."
+echo "Note: /etc/udev/rules.d/99-hailo.rules was kept (may be used by other Hailo apps)."
+echo "Remove manually if no longer needed: sudo rm /etc/udev/rules.d/99-hailo.rules"
 echo ""

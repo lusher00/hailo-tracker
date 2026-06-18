@@ -1,3 +1,9 @@
+# Install via apt, not pip — these need system packages on Pi OS
+# sudo apt install -y python3-opencv python3-flask python3-numpy
+#
+# hailo_platform is installed as part of hailo-all:
+# sudo apt install hailo-all
+
 flask
 opencv-python
 numpy

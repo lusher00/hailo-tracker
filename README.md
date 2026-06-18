@@ -1,110 +1,176 @@
-# 🐱 Hailo Cat Tracker
+# Hailo Tracker
 
-Real-time AI-powered cat detection running on Raspberry Pi 5 with Hailo-8L NPU.
+Real-time object detection on Raspberry Pi 5 with Hailo-8L NPU. Streams annotated video to a browser over HTTP.
+
+Detects all 80 COCO classes by default. Edit `TRACKED_CLASSES` at the top of `hailo_tracker.py` to limit tracking to specific objects.
 
 ## Hardware
+
 - Raspberry Pi 5
-- Hailo-8L AI Accelerator (13 TOPS)
-- Raspberry Pi Camera Module (IMX477)
+- Hailo-8L AI Kit (M.2 HAT+)
+- Raspberry Pi Camera Module 3 (IMX708)
 
 ## Features
-- 🚀 Real-time object detection at 30 FPS
-- 🐱 YOLO-based cat detection
-- 🌐 Live web streaming interface
-- ⚡ Hardware-accelerated inference on Hailo NPU
 
-## Installation
+- 30 FPS real-time inference via Hailo-8L NPU
+- All 80 COCO classes with per-class color coding
+- Configurable class filter — track everything or just what you care about
+- Live MJPEG stream in any browser, no app needed
+- `systemd` service for headless auto-start
 
-### 1. Install Hailo Driver & Runtime
+## Quick Start
+
 ```bash
-# Install HailoRT
-git clone https://github.com/hailo-ai/hailort.git
-cd hailort
-git checkout v4.23.0
-mkdir build && cd build
-cmake -H.. -B. -DCMAKE_BUILD_TYPE=Release
-cmake --build . --config Release -j$(nproc)
-sudo cmake --build . --config Release --target install
-sudo ldconfig
+git clone https://github.com/lusher00/hailo-tracker
+cd hailo-tracker
+./install.sh
 ```
 
-### 2. Install Hailo PCIe Driver
-```bash
-cd ~/hailort-drivers
-git clone https://github.com/hailo-ai/hailort-drivers.git
-cd hailort-drivers/linux/pcie
-git checkout hailo8
-make
-sudo make install
-sudo modprobe hailo_pci
+Open `http://<pi-ip>:8080` in a browser.
+
+## Configuration
+
+Open `hailo_tracker.py` and edit the CONFIG block near the top:
+
+```python
+# Track everything (default)
+TRACKED_CLASSES = []
+
+# Or pick specific classes from the 80-class COCO list
+TRACKED_CLASSES = ["cat", "dog", "person"]
+
+# Confidence threshold (0.0 – 1.0)
+CONF_THRESH = 0.40
+
+# Camera rotation
+ROTATE = cv2.ROTATE_90_CLOCKWISE   # or None to disable
 ```
 
-### 3. Install Firmware
+After editing, restart the service:
+
 ```bash
-curl -o hailo8_fw.bin https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/4.23.0/FW/hailo8_fw.4.23.0.bin
-sudo mkdir -p /lib/firmware/hailo
-sudo cp hailo8_fw.bin /lib/firmware/hailo/
+sudo systemctl restart hailo-tracker
 ```
 
-### 4. Install Python Dependencies
+## COCO Classes
+
+The full 80-class list is in `hailo_tracker.py`. A few useful ones:
+
+| Class | ID | Class | ID |
+|-------|----|-------|----|
+| person | 0 | cat | 15 |
+| bicycle | 1 | dog | 16 |
+| car | 2 | horse | 17 |
+| bird | 14 | bottle | 39 |
+
+## Installation Details
+
+### Prerequisites
+
+The Hailo AI Kit needs the PCIe driver and HailoRT runtime installed. The easiest path on Pi 5 is the official Hailo install script:
+
 ```bash
-sudo apt install -y python3-opencv python3-flask
-sudo pip3 install --break-system-packages \
-    ~/hailort/hailort/libhailort/bindings/python/platform
+sudo apt update && sudo apt upgrade -y
+sudo apt install hailo-all -y
+sudo reboot
 ```
 
-### 5. Run the Tracker
+Verify the kit is detected after reboot:
+
 ```bash
-python3 cat_tracker_live.py
+hailortcli fw-control identify
 ```
 
-Open browser to `http://<raspberry-pi-ip>:8080`
+You should see `Hailo-8L` in the output. If not, check that the M.2 HAT is seated and the PCIe cable is connected.
 
-## How It Works
+### Python Dependencies
 
-1. **Camera Stream**: `rpicam-vid` captures 640x640 MJPEG frames at 30 FPS
-2. **AI Inference**: Each frame is processed by YOLOv8s model on Hailo-8L NPU
-3. **Detection**: Cats are identified with bounding boxes and confidence scores
-4. **Web Display**: Annotated frames stream to browser in real-time
+```bash
+sudo apt install -y python3-opencv python3-flask python3-numpy
+```
+
+The `hailo_platform` Python package is installed as part of `hailo-all` above.
+
+### Model File
+
+The YOLOv8s `.hef` file compiled for Hailo-8L is not included in this repo (it's ~30MB). Download it from the Hailo model zoo:
+
+```bash
+pip install huggingface_hub --break-system-packages
+python3 -c "
+from huggingface_hub import hf_hub_download
+hf_hub_download(
+    repo_id='hailo/Model-Zoo',
+    filename='hailo8l/yolov8s.hef',
+    local_dir='.'
+)
+"
+```
+
+Or find it in `/usr/share/hailo-models/` if `hailo-all` installed it.
+
+### Service Install
+
+```bash
+./install.sh
+```
+
+This sets up a `systemd` service that starts automatically on boot.
+
+**Useful commands:**
+
+```bash
+sudo systemctl status hailo-tracker
+sudo journalctl -u hailo-tracker -f    # live logs
+sudo systemctl restart hailo-tracker
+sudo systemctl stop hailo-tracker
+```
+
+To uninstall:
+
+```bash
+./uninstall.sh
+```
 
 ## Architecture
+
 ```
-Camera (IMX477) 
-    ↓ MJPEG stream
-rpicam-vid 
-    ↓ JPEG frames
-Python decoder
-    ↓ NumPy arrays
+Camera (IMX708)
+    ↓ rpicam-vid MJPEG
+Python JPEG decoder
+    ↓ NumPy array
+Letterbox → 640×640
+    ↓
 Hailo-8L NPU (YOLOv8s)
-    ↓ Detections
-OpenCV annotation
-    ↓ Annotated JPEG
-Flask web server
-    ↓ HTTP stream
-Browser
+    ↓ [80][N, 5] detections
+Class filter + OpenCV annotation
+    ↓ annotated JPEG
+Flask MJPEG stream → Browser
 ```
 
 ## Performance
-- **Inference**: ~30ms per frame on Hailo-8L
-- **Total latency**: ~50-100ms camera to display
-- **Power**: ~3W for NPU
 
-## Model
-- YOLOv8s compiled for Hailo-8L
-- 80-class COCO dataset (class 15 = cat)
-- Input: 640x640 RGB
-- Output: Bounding boxes + confidence scores
+- ~30ms inference per frame on Hailo-8L
+- ~50–100ms end-to-end latency (camera to browser)
+- ~3W NPU power draw
 
-## Future Improvements
-- [ ] Send cat position to robot controller (BeagleBone Blue)
-- [ ] Add tracking ID for multiple cats
-- [ ] Record detection events
-- [ ] Mobile-responsive UI
+## Troubleshooting
+
+**`/dev/hailo0` permission denied**
+```bash
+sudo rmmod hailo_pci && sudo modprobe hailo_pci
+```
+Or run `./install.sh` which sets up a udev rule to fix this permanently.
+
+**Camera not found**
+```bash
+rpicam-vid --list-cameras
+```
+
+**Port 8080 in use** — change `HTTP_PORT` in `hailo_tracker.py`.
+
+**`hailo_platform` not found** — make sure you're using the system Python 3 (`/usr/bin/python3`), not a venv. The Hailo package installs into the system site-packages.
 
 ## License
-MIT
 
-## Acknowledgments
-- Hailo for the AI accelerator and HailoRT SDK
-- Ultralytics for YOLOv8
-- Raspberry Pi Foundation
+MIT
