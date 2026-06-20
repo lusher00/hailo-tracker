@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+
+# Copyright (c) 2025 Ryan Lush <ryan.lush@gmail.com>
+#
+# Free for personal, educational, and open-source use.
+# Commercial use requires written permission from the author.
+# Contact: ryan.lush@gmail.com
 """
 hailo_tracker.py — Real-time object detection on Raspberry Pi 5 + Hailo-8L
 Streams annotated MJPEG video over HTTP. Tracks all 80 COCO classes by default;
