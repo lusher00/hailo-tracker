@@ -110,6 +110,19 @@ PAGE = """<!DOCTYPE html>
           background: transparent; }
   .chip.on { color: #06110b; font-weight: 700; }
 
+  select { background: #0d1116; color: var(--fg); border: 1px solid var(--line);
+           border-radius: 4px; padding: 5px 6px; font: inherit; max-width: 152px; }
+  select:focus { outline: none; border-color: var(--accent); }
+
+  .camblock { border: 1px solid var(--line); border-radius: 5px; margin-bottom: 8px; }
+  .camblock > summary { cursor: pointer; padding: 7px 9px; list-style: none;
+                        display: flex; align-items: center; gap: 8px; }
+  .camblock > summary::-webkit-details-marker { display: none; }
+  .camblock > summary::before { content: '\25B8'; color: var(--dim); }
+  .camblock[open] > summary::before { content: '\25BE'; }
+  .camblock .body { padding: 2px 9px 9px; border-top: 1px solid var(--line); }
+  .note { color: #4c545e; font-size: 10.5px; margin-top: 8px; line-height: 1.45; }
+
   button { font: inherit; background: #1e242b; color: var(--fg); cursor: pointer;
            border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px; }
   button:hover { border-color: var(--accent); color: var(--accent); }
@@ -298,26 +311,161 @@ function renderStages() {
   });
 }
 
-// ---------- camera detect toggles ----------
+// ---------- per-camera controls ----------
+//
+// Two kinds of setting live in here and they behave differently. Anything
+// rpicam-vid reads at launch — resolution, framerate, rotation, exposure —
+// can only change by relaunching capture, so those are staged and sent on
+// Apply. Detection and the software effect take hold on the next frame, so
+// they fire the moment you change them.
+function numField(box, label, id, value, step, placeholder) {
+  const row = el('label', 'row');
+  row.appendChild(el('span', null, label));
+  const inp = document.createElement('input');
+  inp.type = 'number';
+  inp.id = id;
+  inp.step = step || 'any';
+  inp.value = (value === null || value === undefined) ? '' : value;
+  if (placeholder) inp.placeholder = placeholder;
+  row.appendChild(inp);
+  box.appendChild(row);
+  return inp;
+}
+
+function selField(box, label, id, options, value) {
+  const row = el('label', 'row');
+  row.appendChild(el('span', null, label));
+  const sel = document.createElement('select');
+  sel.id = id;
+  options.forEach(o => {
+    const opt = document.createElement('option');
+    opt.value = o.value;
+    opt.textContent = o.label;
+    if (String(o.value) === String(value)) opt.selected = true;
+    sel.appendChild(opt);
+  });
+  row.appendChild(sel);
+  box.appendChild(row);
+  return sel;
+}
+
+function boolField(box, label, id, value) {
+  const row = el('label', 'row');
+  row.appendChild(el('span', null, label));
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.id = id;
+  cb.checked = !!value;
+  row.appendChild(cb);
+  box.appendChild(row);
+  return cb;
+}
+
 function renderCamRows() {
   const box = document.getElementById('camRows');
   box.innerHTML = '';
+
   CAMERAS.forEach(c => {
-    const label = el('label', 'row');
-    const name = el('span', null,
-      c.name + (c.sensor ? ' · ' + c.sensor : '') + '  detect');
+    const i = c.index;
+    const block = el('details', 'camblock');
+
+    const sum = document.createElement('summary');
+    sum.appendChild(el('span', 'who', c.name));
+    if (c.sensor) sum.appendChild(el('span', 'sensor', c.sensor));
+    sum.appendChild(el('span', 'spacer'));
+    sum.appendChild(el('span', 'sensor', 'detect'));
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.checked = !!detect[c.index];
-    cb.onchange = () => {
-      detect[c.index] = cb.checked;
-      camsDirty = true;
-      queuePush();
-    };
-    label.appendChild(name);
-    label.appendChild(cb);
-    box.appendChild(label);
+    cb.checked = !!detect[i];
+    cb.onclick = e => e.stopPropagation();   // don't toggle the disclosure
+    cb.onchange = () => { detect[i] = cb.checked; camsDirty = true; queuePush(); };
+    sum.appendChild(cb);
+    block.appendChild(sum);
+
+    const body = el('div', 'body');
+
+    // Real sensor modes, straight from libcamera. Anything else means the ISP
+    // crops and scales, so say so rather than pretending it is native.
+    const modes = (c.modes || []).map(m => ({
+      value: m.width + 'x' + m.height,
+      label: m.width + '\u00d7' + m.height,
+    }));
+    const cur = c.width + 'x' + c.height;
+    if (!modes.some(m => m.value === cur)) {
+      modes.unshift({value: cur, label: c.width + '\u00d7' + c.height + ' (scaled)'});
+    }
+    selField(body, 'Resolution', 'cRes' + i, modes, cur);
+    numField(body, 'Framerate', 'cFps' + i, c.framerate, '1');
+    selField(body, 'Rotate', 'cRot' + i,
+             [0, 90, 180, 270].map(v => ({value: v, label: v + '\u00b0'})), c.rotate);
+    boolField(body, 'Flip horizontal', 'cHf' + i, c.hflip);
+    boolField(body, 'Flip vertical', 'cVf' + i, c.vflip);
+
+    numField(body, 'Shutter \u00b5s', 'cSh' + i, c.shutter, '100', 'auto');
+    numField(body, 'Gain', 'cGain' + i, c.gain, '0.1', 'auto');
+    numField(body, 'EV', 'cEv' + i, c.ev, '0.1', '0');
+    numField(body, 'Brightness', 'cBr' + i, c.brightness, '0.05', '0');
+    numField(body, 'Contrast', 'cCon' + i, c.contrast, '0.05', '1');
+    numField(body, 'Saturation', 'cSat' + i, c.saturation, '0.05', '1');
+    numField(body, 'Sharpness', 'cShp' + i, c.sharpness, '0.05', '1');
+    selField(body, 'White balance', 'cAwb' + i,
+             (c.awb_modes || ['']).map(v => ({value: v, label: v || 'default'})), c.awb);
+
+    const eff = selField(body, 'Effect', 'cEff' + i,
+             (c.effects || ['none']).map(v => ({value: v, label: v})), c.effect);
+    eff.onchange = () => pushCamera(i, {effect: eff.value});
+
+    const row = el('div', 'btn-row');
+    const apply = el('button', null, 'Apply');
+    apply.onclick = () => applyCamera(i);
+    row.appendChild(apply);
+    body.appendChild(row);
+
+    body.appendChild(el('div', 'note',
+      'Apply restarts this camera\u2019s capture \u2014 about a second of black, ' +
+      'the other camera is untouched. Effect and detect take hold on the next ' +
+      'frame. Blank shutter or gain means auto.'));
+
+    block.appendChild(body);
+    box.appendChild(block);
   });
+}
+
+async function pushCamera(index, patch) {
+  const body = {cameras: {}};
+  body.cameras[index] = patch;
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!j.changed || !j.changed.length) toast('nothing changed');
+  } catch (e) { toast('camera update failed'); }
+}
+
+function applyCamera(i) {
+  const val = id => document.getElementById(id).value.trim();
+  const parts = val('cRes' + i).split('x');
+  pushCamera(i, {
+    width: parseInt(parts[0], 10),
+    height: parseInt(parts[1], 10),
+    framerate: parseInt(val('cFps' + i), 10) || 30,
+    rotate: parseInt(val('cRot' + i), 10) || 0,
+    hflip: document.getElementById('cHf' + i).checked,
+    vflip: document.getElementById('cVf' + i).checked,
+    shutter: val('cSh' + i),
+    gain: val('cGain' + i),
+    ev: val('cEv' + i),
+    brightness: val('cBr' + i),
+    contrast: val('cCon' + i),
+    saturation: val('cSat' + i),
+    sharpness: val('cShp' + i),
+    awb: val('cAwb' + i),
+    effect: val('cEff' + i),
+  });
+  toast('cam' + i + ': restarting capture');
 }
 
 // The server's camera list changed under us — a restart that found different
@@ -458,8 +606,11 @@ async function poll() {
     const list = s.cameras || [];
     const sig = list.map(c => c.index + ':' + c.sensor + ':' + c.detect).join(',');
     if (sig !== camSig) {
-      const shape = list.map(c => c.index + ':' + c.sensor).join(',');
-      const known = CAMERAS.map(c => c.index + ':' + c.sensor).join(',');
+      // Resolution is part of the shape: after an Apply the panels and the
+      // control values both need rebuilding from what the server now has.
+      const shape = list.map(c => c.index + ':' + c.sensor + ':' + c.resolution).join(',');
+      const known = CAMERAS.map(c => c.index + ':' + c.sensor + ':' +
+                                     c.width + 'x' + c.height).join(',');
       camSig = sig;
       if (shape !== known) { refreshCameras(); return setTimeout(poll, 2000); }
       // Same cameras, detection changed elsewhere — resync the checkboxes.

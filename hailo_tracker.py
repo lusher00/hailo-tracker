@@ -164,8 +164,23 @@ _CAM_DEFAULTS = {
     "gain":          ("2", str),            # "" = auto
     "ev":            ("0", str),
     "denoise":       ("off", str),
-    "hflip":         (False, bool),
-    "vflip":         (False, bool),
+    # Camera 0 is mounted inverted on this build, so both flips default on --
+    # 180 degrees, done by the ISP via rpicam-vid rather than by cv2.rotate on
+    # every frame. Override per install with CAM_HFLIP/CAM_VFLIP if a given
+    # machine has it the right way up.
+    "hflip":         (True, bool),
+    "vflip":         (True, bool),
+    # Image controls. Blank means "don't pass the flag", which leaves the ISP
+    # on its own default — not the same as passing a neutral value.
+    "brightness":    ("", str),             # -1.0 .. 1.0
+    "contrast":      ("", str),             # 0.0 .. ~2.0, 1.0 is normal
+    "saturation":    ("", str),             # 0.0 = mono, 1.0 is normal
+    "sharpness":     ("", str),             # 0.0 = none, 1.0 is normal
+    "awb":           ("", str),             # auto|incandescent|tungsten|...
+    # Software effect, applied to the finished frame in the render loop. Costs
+    # CPU per frame but needs no capture restart, and never touches what the
+    # NPU sees — inference runs on the clean frame before any of this.
+    "effect":        ("none", str),
     "extra_args":    ("", str),             # raw passthrough to rpicam-vid
     "rotate":        (0, int),              # 0|90|180|270
     "infer_every_n": (INFER_EVERY_N, int),
@@ -181,7 +196,12 @@ _CAM0_ALIASES = {
 
 # Secondary cameras come up as plain video. Turn detection on per camera from
 # the web UI, or pin it with CAMN_DETECT=1.
-_CAM_SECONDARY_DEFAULTS = {"detect": False}
+# hflip/vflip are here so the inverted mounting of camera 0 does NOT propagate.
+# Everything a secondary camera leaves unset inherits camera 0's resolved value,
+# which is right for exposure and framerate and wrong for orientation: how one
+# module is bolted in says nothing about the other. Set CAM1_HFLIP/CAM1_VFLIP if
+# the second one is inverted too.
+_CAM_SECONDARY_DEFAULTS = {"detect": False, "hflip": False, "vflip": False}
 
 # Sensors with no focus actuator. Handing --autofocus-mode to rpicam-vid on one
 # of these makes it exit immediately, which would otherwise surface as an
@@ -191,13 +211,32 @@ NO_AUTOFOCUS_SENSORS = {"imx477", "imx219", "imx296", "imx290", "imx462", "ov564
 _ROTATE_MAP = {0: None, 90: cv2.ROTATE_90_CLOCKWISE,
                180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
 
+AWB_MODES = ("", "auto", "incandescent", "tungsten", "fluorescent",
+             "indoor", "daylight", "cloudy")
+
+# Software effects. Order matters only for the UI; "none" must stay first.
+EFFECTS = ("none", "gray", "invert", "edges", "heat", "sharpen")
+
+# Settings that live in the rpicam-vid command line, so changing one means
+# relaunching capture for that camera. Everything else applies on the next
+# rendered frame.
+CAPTURE_KEYS = frozenset((
+    "width", "height", "framerate", "autofocus", "lens_position", "shutter",
+    "gain", "ev", "denoise", "hflip", "vflip", "brightness", "contrast",
+    "saturation", "sharpness", "awb", "extra_args", "rotate",
+))
+
 
 class CameraConfig:
     """Resolved capture settings for one camera."""
 
-    def __init__(self, index, sensor="", base=None):
+    def __init__(self, index, sensor="", base=None, modes=()):
         self.index = int(index)
         self.sensor = (sensor or "").lower()
+        # What libcamera says this sensor can actually produce. Used to offer
+        # real choices in the UI instead of arbitrary numbers the ISP would
+        # have to crop and scale into.
+        self.modes = [tuple(m) for m in modes]
         prefix = "CAM_" if self.index == 0 else f"CAM{self.index}_"
         self._explicit = set()
 
@@ -268,10 +307,70 @@ class CameraConfig:
         return ", ".join(bits)
 
     def to_dict(self):
-        return {"index": self.index, "name": self.name, "sensor": self.sensor,
-                "width": self.width, "height": self.height,
-                "framerate": self.framerate, "rotate": self.rotate,
-                "detect": self.detect, "infer_every_n": self.infer_every_n}
+        d = {"index": self.index, "name": self.name, "sensor": self.sensor,
+             "modes": [{"width": w, "height": h} for w, h in self.modes],
+             "effects": list(EFFECTS), "awb_modes": list(AWB_MODES)}
+        for key in _CAM_DEFAULTS:
+            d[key] = getattr(self, key)
+        return d
+
+    def apply_runtime(self, data):
+        """Change settings on a live camera. Returns (changed, needs_restart)."""
+        changed = []
+        for key, value in (data or {}).items():
+            if key not in _CAM_DEFAULTS:
+                continue
+            try:
+                new = self._coerce(key, value)
+            except (TypeError, ValueError):
+                log(f"[WARN] {self.name}: ignoring {key}={value!r}")
+                continue
+            if new != getattr(self, key):
+                setattr(self, key, new)
+                changed.append(key)
+        return changed, any(k in CAPTURE_KEYS for k in changed)
+
+    def _coerce(self, key, value):
+        default, cast = _CAM_DEFAULTS[key]
+        if key == "rotate":
+            v = int(value)
+            if v not in _ROTATE_MAP:
+                raise ValueError(key)
+            return v
+        if key == "effect":
+            v = str(value).lower()
+            if v not in EFFECTS:
+                raise ValueError(key)
+            return v
+        if key == "awb":
+            v = str(value).lower()
+            if v not in AWB_MODES:
+                raise ValueError(key)
+            return v
+        if key in ("width", "height"):
+            v = int(value)
+            if not 64 <= v <= 8192:
+                raise ValueError(key)
+            return v
+        if key == "framerate":
+            v = int(value)
+            if not 1 <= v <= 120:
+                raise ValueError(key)
+            return v
+        if key == "infer_every_n":
+            return max(1, int(value))
+        if cast is bool:
+            return bool(value)
+        if cast is str:
+            v = str(value).strip()
+            # Numeric controls accept a blank ("leave it to the ISP") or a
+            # number; anything else would reach rpicam-vid as a bad flag and
+            # take the camera down.
+            if key in ("shutter", "gain", "ev", "brightness", "contrast",
+                       "saturation", "sharpness", "lens_position") and v:
+                float(v)
+            return v
+        return cast(value)
 
     def rpicam_cmd(self):
         cmd = [
@@ -297,6 +396,14 @@ class CameraConfig:
             cmd += ["--shutter", self.shutter]
         if self.gain != "":
             cmd += ["--gain", self.gain]
+        for flag, value in (("--brightness", self.brightness),
+                            ("--contrast", self.contrast),
+                            ("--saturation", self.saturation),
+                            ("--sharpness", self.sharpness)):
+            if value != "":
+                cmd += [flag, value]
+        if self.awb:
+            cmd += ["--awb", self.awb]
         if self.hflip:
             cmd += ["--hflip"]
         if self.vflip:
@@ -308,10 +415,18 @@ class CameraConfig:
 
 #   0 : imx708 [4608x2592 10-bit RGGB] (/base/axi/pcie@120000/rp1/i2c@88000/...)
 _CAM_LIST_RE = re.compile(r"^\s*(\d+)\s*:\s*(\S+)")
+#     'SBGGR10_CSI2P' : 1332x990 [30.00 fps - (0, 0)/0x0 crop]
+#                       2028x1080 [50.03 fps - ...]
+_CAM_MODE_RE = re.compile(r"(\d{2,5})x(\d{2,5})\s*\[")
 
 
 def detect_cameras(timeout=8.0):
-    """Ask libcamera what is on the CSI ports -> [(index, sensor), ...]."""
+    """Ask libcamera what is on the CSI ports.
+
+    Returns [(index, sensor, [(w, h), ...]), ...] — the modes come from the
+    same listing, so the UI can offer resolutions the sensor actually has
+    rather than numbers the ISP would have to crop and scale into.
+    """
     for exe in ("rpicam-hello", "libcamera-hello", "rpicam-vid"):
         try:
             proc = subprocess.run([exe, "--list-cameras"], capture_output=True,
@@ -321,20 +436,34 @@ def detect_cameras(timeout=8.0):
         text = (proc.stdout or "") + (proc.stderr or "")
         if "Available cameras" not in text:
             continue
-        found = []
+
+        found, current = [], None
         for line in text.splitlines():
             m = _CAM_LIST_RE.match(line)
             if m:
-                found.append((int(m.group(1)), m.group(2).lower()))
+                current = [int(m.group(1)), m.group(2).lower(), []]
+                found.append(current)
+                continue            # the header's own [4056x3040 12-bit] is
+                                    # the sensor array, not a selectable mode
+            if current is not None:
+                for w, h in _CAM_MODE_RE.findall(line):
+                    wh = (int(w), int(h))
+                    if wh not in current[2]:
+                        current[2].append(wh)
+
         if found:
-            return sorted(set(found))
+            for entry in found:
+                entry[2].sort()
+            return [(i, sensor, modes) for i, sensor, modes in sorted(found)]
     return []
 
 
 def build_camera_configs(spec=None):
     """Turn a CAMERAS= spec into the list of CameraConfig to run."""
     spec = (CAMERAS_SPEC if spec is None else spec).strip()
-    sensors = dict(detect_cameras())
+    detected = detect_cameras()
+    sensors = {i: sensor for i, sensor, _ in detected}
+    modes = {i: m for i, _, m in detected}
 
     if spec.lower() in ("", "auto"):
         indices = sorted(sensors)
@@ -357,7 +486,8 @@ def build_camera_configs(spec=None):
 
     configs, base = [], None
     for i in indices:
-        cfg = CameraConfig(i, sensors.get(i, ""), base=base)
+        cfg = CameraConfig(i, sensors.get(i, ""), base=base,
+                           modes=modes.get(i, ()))
         if base is None:
             base = cfg
         configs.append(cfg)
@@ -850,6 +980,33 @@ def draw_track(frame, track, show_labels, show_ids, show_trails):
     cv2.putText(frame, text, (x1 + 4, ty - 1), FONT, scale, (10, 10, 10), 1, cv2.LINE_AA)
 
 
+def apply_effect(frame, effect):
+    """Visual-only transform of a finished frame.
+
+    Deliberately applied in the render loop, after inference has already run on
+    the clean frame in the capture loop. Running the NPU on an inverted or
+    edge-detected image would wreck detection, and the point of these is to
+    change what you see, not what the model sees.
+    """
+    if effect in ("", "none"):
+        return frame
+    if effect == "gray":
+        g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        return cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
+    if effect == "invert":
+        return cv2.bitwise_not(frame)
+    if effect == "edges":
+        g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        return cv2.cvtColor(cv2.Canny(g, 80, 160), cv2.COLOR_GRAY2BGR)
+    if effect == "heat":
+        g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        return cv2.applyColorMap(g, cv2.COLORMAP_INFERNO)
+    if effect == "sharpen":
+        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+        return cv2.filter2D(frame, -1, kernel)
+    return frame
+
+
 def draw_hud(frame, stats, live_count, label=None, detecting=True):
     bits = []
     if label:
@@ -932,6 +1089,9 @@ class CameraPipeline:
         self._live_lock = threading.Lock()
         self._last_logged = {}
         self._stderr_tail = deque(maxlen=20)
+        self._reconfigure = threading.Event()
+        self._proc = None
+        self._proc_lock = threading.Lock()
 
     def __repr__(self):
         return f"<CameraPipeline {self.name} {self.cfg.describe()}>"
@@ -943,6 +1103,23 @@ class CameraPipeline:
                              (self.render_loop, "render")):
             threading.Thread(target=target, daemon=True,
                              name=f"{self.name}-{role}").start()
+
+    def request_reconfigure(self):
+        """Relaunch capture so new rpicam-vid arguments take effect.
+
+        rpicam-vid reads its settings once at startup, so there is no way to
+        change resolution or exposure on a running camera — it has to come back
+        up. Killing it here rather than waiting for the capture loop to notice
+        keeps the gap to about a second, and only this camera is touched.
+        """
+        self._reconfigure.set()
+        with self._proc_lock:
+            proc = self._proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
 
     def set_detect(self, enabled):
         """Flip inference on or off for this camera without a restart."""
@@ -1000,15 +1177,18 @@ class CameraPipeline:
         backoff = 1.0
         frame_index = 0
         last_raw = None
-        rotate = self.cfg.rotate_flag
 
         while not _shutdown.is_set():
             proc = None
             try:
+                # Re-read per-restart: a reconfigure may have changed any of it.
+                rotate = self.cfg.rotate_flag
                 cmd = self.cfg.rpicam_cmd()
                 log(f"[{self.name}] {' '.join(cmd)}")
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, bufsize=0)
+                with self._proc_lock:
+                    self._proc = proc
                 self._stderr_tail.clear()
                 threading.Thread(target=self._drain_stderr, args=(proc,),
                                  daemon=True,
@@ -1021,6 +1201,11 @@ class CameraPipeline:
                 stalled = False
 
                 while not _shutdown.is_set():
+                    if self._reconfigure.is_set():
+                        self._reconfigure.clear()
+                        log(f"[{self.name}] applying new camera settings")
+                        break
+
                     # Wait with a timeout rather than blocking in read(). A
                     # camera that opens but never sends anything would
                     # otherwise park this thread forever: no frames, no error,
@@ -1116,6 +1301,14 @@ class CameraPipeline:
                     self.queue.put((frame, last_raw))
 
             except Exception as e:
+                # A reconfigure kills rpicam-vid on purpose; the read failing
+                # is the expected consequence, not a fault. Restart clean with
+                # no error counted and no backoff.
+                if self._reconfigure.is_set():
+                    self._reconfigure.clear()
+                    log(f"[{self.name}] applying new camera settings")
+                    continue
+
                 with self.stats._lock:
                     self.stats.capture_errors += 1
                 log(f"[{self.name}] error: {e} — restarting in {backoff:.0f}s")
@@ -1123,6 +1316,8 @@ class CameraPipeline:
                 _shutdown.wait(backoff)
                 backoff = min(backoff * 2, 30.0)
             finally:
+                with self._proc_lock:
+                    self._proc = None
                 if proc is not None:
                     try:
                         proc.terminate()
@@ -1180,6 +1375,10 @@ class CameraPipeline:
                     # uniform.
                     visible = [_FakeTrack(cid, name, box, conf)
                                for cid, name, box, conf in dets]
+
+            effect = self.cfg.effect
+            if effect and effect != "none":
+                frame = apply_effect(frame, effect)
 
             if show_roi and payload is not None:
                 draw_roi(frame, poly_px)
@@ -1450,6 +1649,13 @@ def _apply_camera_config(spec):
             continue
         if "detect" in value and cam.set_detect(value["detect"]):
             changed.append(f"{cam.name}.detect")
+
+        rest = {k: v for k, v in value.items() if k != "detect"}
+        if rest:
+            keys, needs_restart = cam.cfg.apply_runtime(rest)
+            changed += [f"{cam.name}.{k}" for k in keys]
+            if needs_restart:
+                cam.request_reconfigure()
     return changed
 
 
@@ -1756,8 +1962,9 @@ def main():
         if not found:
             print("No cameras reported by libcamera.")
             return
-        for i, sensor in found:
-            print(f"{i:3d}  {sensor}")
+        for i, sensor, modes in found:
+            sizes = ", ".join(f"{w}x{h}" for w, h in modes) or "no modes listed"
+            print(f"{i:3d}  {sensor:10s} {sizes}")
         return
 
     apply_args(args)

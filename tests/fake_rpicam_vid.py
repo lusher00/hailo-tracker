@@ -41,6 +41,11 @@ if args.list_cameras:
     for i, sensor in enumerate(SENSORS):
         print(f"{i} : {sensor} [4608x2592 10-bit RGGB] "
               f"(/base/axi/pcie@120000/rp1/i2c@88000/{sensor}@1a)")
+        # Real rpicam-hello lists the selectable sensor modes under each
+        # camera; the tracker parses these to offer resolutions that exist.
+        print("    Modes: 'SBGGR10_CSI2P' : 640x480 [60.00 fps - (0, 0)/0x0 crop]")
+        print("                            1280x720 [30.00 fps - (0, 0)/0x0 crop]")
+        print("                            2304x1296 [30.00 fps - (0, 0)/0x0 crop]")
     sys.exit(0)
 
 CAM = int(args.camera or 0)

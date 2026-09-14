@@ -234,6 +234,65 @@ def main():
         counts1 = _count_frames_two_clients(BASE + "/video/1", seconds=3.0)
         check("camera 1 streams over /video/1", min(counts1) > 5, str(counts1))
 
+        check("sensor modes are enumerated",
+              len(by_index[0].get("modes") or []) >= 3,
+              str(by_index[0].get("modes")))
+        check("modes are parsed as real sizes",
+              {"width": 1280, "height": 720} in (by_index[0].get("modes") or []),
+              str(by_index[0].get("modes")))
+
+        # ---------------- live reconfiguration ----------------
+        print("\nLive camera reconfiguration")
+        _, before = get_json("/stats/1")
+
+        status, res = post_json("/api/config",
+                                {"cameras": {"1": {"effect": "gray"}}})
+        check("software effect accepted",
+              status == 200 and "cam1.effect" in res["changed"],
+              str(res.get("changed")))
+        time.sleep(1.5)
+        _, cams_now = get_json("/cameras")
+        check("effect is reflected in the camera config",
+              {c["index"]: c for c in cams_now}[1]["effect"] == "gray")
+        _, mid = get_json("/stats/1")
+        check("an effect does not restart capture",
+              mid["capture_errors"] == before["capture_errors"] and mid["fps"] > 1,
+              f"fps={mid['fps']} errors={mid['capture_errors']}")
+
+        status, res = post_json("/api/config",
+                                {"cameras": {"1": {"width": 640, "height": 480}}})
+        check("resolution change accepted",
+              status == 200 and "cam1.width" in res["changed"], str(res.get("changed")))
+        time.sleep(7)
+
+        _, cams_now = get_json("/cameras")
+        cam1 = {c["index"]: c for c in cams_now}[1]
+        check("new resolution is live", cam1["width"] == 640 and cam1["height"] == 480,
+              f"{cam1['width']}x{cam1['height']}")
+
+        _, after = get_json("/stats/1")
+        check("camera streams again after reconfiguring",
+              after["healthy"] and after["fps"] > 1.0, f"fps={after['fps']}")
+        # The whole point of request_reconfigure(): an intentional relaunch is
+        # not a fault, so it must not inflate the restart counter operators
+        # watch for real camera trouble.
+        check("a reconfigure is not counted as a capture error",
+              after["capture_errors"] == before["capture_errors"],
+              f"{before['capture_errors']} -> {after['capture_errors']}")
+
+        _, st0 = get_json("/stats/0")
+        check("the other camera was undisturbed",
+              st0["healthy"] and st0["capture_errors"] == 0, f"fps={st0['fps']}")
+
+        post_json("/api/config", {"cameras": {"1": {"width": 1280, "height": 720,
+                                                   "effect": "none"}}})
+        time.sleep(7)
+
+        status, res = post_json("/api/config", {"cameras": {"1": {"effect": "nope"}}})
+        _, cams_now = get_json("/cameras")
+        check("an unknown effect is rejected, not applied",
+              {c["index"]: c for c in cams_now}[1]["effect"] == "none")
+
         # ---------------- detection + tracking ----------------
         print("\nDetection and tracking")
         status, tracks = get_json("/tracks")

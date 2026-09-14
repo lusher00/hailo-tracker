@@ -28,6 +28,9 @@ Labels every object it sees — all 80 COCO classes, each with its own colour, a
 - Cameras are auto-detected at startup; sensor-specific quirks handled (no autofocus flags sent to an IMX477)
 - Detection is per camera and switchable live, so a second camera can be plain video until you want the NPU on it
 - Per-camera capture settings — resolution, framerate, rotation and exposure are independent
+- Resolution, exposure, white balance and image controls changed live from the browser, one camera at a time
+- Software effects — grayscale, invert, edge detect, heat map, sharpen — applied after inference, so what the model sees is never altered
+- A camera that stops delivering frames says so on its own panel instead of disappearing
 
 **Interface**
 
@@ -124,6 +127,13 @@ CAM_SHUTTER=20000                # microseconds; blank = auto exposure
 CAM_GAIN=2
 CAM_ROTATE=0                     # 0, 90, 180, 270
 
+CAM_BRIGHTNESS=                  # -1.0..1.0   blank = leave it to the ISP
+CAM_CONTRAST=                    # 1.0 is normal
+CAM_SATURATION=                  # 0.0 is mono, 1.0 is normal
+CAM_SHARPNESS=                   # 1.0 is normal
+CAM_AWB=                         # auto|incandescent|tungsten|fluorescent|indoor|daylight|cloudy
+CAM_EFFECT=none                  # none|gray|invert|edges|heat|sharpen
+
 CAM1_FRAMERATE=15                # camera 1 inherits camera 0 unless told otherwise
 CAM1_ROTATE=180
 CAM1_DETECT=true                 # run the NPU on camera 1 as well
@@ -132,7 +142,7 @@ SNAPSHOT_ON_DETECT=true
 WEBHOOK_URL=http://homeassistant.local:8123/api/webhook/hailo
 ```
 
-The file installed by `install.sh` lists every available setting with comments. Confidence, the class filter, and the display toggles can also be changed live from the web UI — those changes apply instantly but reset to the file's values on restart.
+The file installed by `install.sh` lists every available setting with comments. Confidence, the class filter, the display toggles and every per-camera setting can also be changed live from the web UI — those changes apply instantly but reset to the file's values on restart. This file is the only thing that survives one.
 
 ### Multiple cameras
 
@@ -152,7 +162,7 @@ CAM1_FRAMERATE=15                # ...except camera 1
 CAM1_ROTATE=180                  # mounted upside down
 ```
 
-Every per-camera setting works this way: `CAM1_WIDTH`, `CAM1_HEIGHT`, `CAM1_FRAMERATE`, `CAM1_ROTATE`, `CAM1_SHUTTER`, `CAM1_GAIN`, `CAM1_EV`, `CAM1_DENOISE`, `CAM1_AUTOFOCUS`, `CAM1_LENS_POSITION`, `CAM1_HFLIP`, `CAM1_VFLIP`, `CAM1_EXTRA_ARGS`, `CAM1_INFER_EVERY_N`, `CAM1_DETECT`.
+Every per-camera setting works this way: `CAM1_WIDTH`, `CAM1_HEIGHT`, `CAM1_FRAMERATE`, `CAM1_ROTATE`, `CAM1_SHUTTER`, `CAM1_GAIN`, `CAM1_EV`, `CAM1_DENOISE`, `CAM1_AUTOFOCUS`, `CAM1_LENS_POSITION`, `CAM1_HFLIP`, `CAM1_VFLIP`, `CAM1_EXTRA_ARGS`, `CAM1_INFER_EVERY_N`, `CAM1_DETECT`, `CAM1_BRIGHTNESS`, `CAM1_CONTRAST`, `CAM1_SATURATION`, `CAM1_SHARPNESS`, `CAM1_AWB`, `CAM1_EFFECT`.
 
 **Detection is opt-in per camera.** Camera 0 runs the NPU; any additional camera comes up as plain video, because two cameras sharing one accelerator halve the inference rate each one gets. Turn it on from the Cameras panel in the web UI, or pin it:
 
@@ -169,6 +179,31 @@ curl -X POST http://<pi-ip>:8080/api/config \
 The class filter, confidence threshold and display toggles are global — one NPU, one set of rules. What is per camera: capture settings, track IDs, stats, and whether inference runs at all. Track IDs restart at 1 for each camera, so an event is identified by the `(camera, track_id)` pair; the event log, the CSV export and the webhook payload all carry the camera index.
 
 If a sensor has no focus actuator (IMX477, IMX219, OV5647) the autofocus flags are dropped automatically rather than handed to `rpicam-vid`, which would otherwise refuse to start and show up as a camera that restarts forever.
+
+### Live camera controls
+
+Each camera has its own block in the **Cameras** panel of the web UI. Expand it for resolution, framerate, rotation, flips, shutter, gain, EV, brightness, contrast, saturation, sharpness and white balance.
+
+The **Resolution** dropdown lists the modes that sensor actually has, read from `rpicam-hello --list-cameras` at startup. Anything else is marked *(scaled)*, because the ISP has to crop and resize into it — which matters on a 4:3 sensor like the IMX477, whose smallest native mode is 1332x990 and which has no 720p mode at all.
+
+Two different things happen when you change something:
+
+| Setting | Effect |
+|---------|--------|
+| Resolution, framerate, rotation, flips, exposure, image controls, white balance | Staged until you press **Apply**, then that camera's `rpicam-vid` is relaunched — about a second of black. The other camera keeps streaming. |
+| Effect, and the detect checkbox | Applied on the very next frame. No restart. |
+
+`rpicam-vid` reads its settings once at launch and offers no runtime control channel, which is why the first group needs a relaunch. An intentional relaunch is deliberately *not* counted as a capture error and skips the restart backoff, so `capture_errors` in `/stats` still means real camera trouble.
+
+**Effects run after inference**, on the finished frame in the render loop. Detection always sees clean video — running YOLO on an inverted or edge-detected image would wreck it. They cost CPU per frame per camera, and `edges` and `heat` are the expensive ones at 720p30.
+
+Everything here is also settable from the env file (`CAM_EFFECT`, `CAM_AWB`, …) and over HTTP:
+
+```bash
+curl -X POST http://<pi-ip>:8080/api/config \
+     -H 'Content-Type: application/json' \
+     -d '{"cameras": {"0": {"width": 1332, "height": 990, "effect": "heat"}}}'
+```
 
 ### Camera notes
 
@@ -213,7 +248,7 @@ Coordinates are normalised 0–1, so they survive a resolution change. A detecti
 | `/video/<n>` | MJPEG stream from camera `n` |
 | `/snapshot` | Latest annotated frame from camera 0, single JPEG |
 | `/snapshot/<n>` | Latest annotated frame from camera `n` |
-| `/cameras` | What's configured — index, sensor, resolution, whether detection is on |
+| `/cameras` | Every per-camera setting, plus the sensor's available modes and the valid effect and white-balance values |
 | `/tracks` | What's in frame right now across every camera, with IDs and boxes |
 | `/tracks/<n>` | The same for camera `n` only |
 | `/stats` | Totals for the whole rig, plus a `cameras` array with per-camera detail |
@@ -225,7 +260,7 @@ Coordinates are normalised 0–1, so they survive a resolution change. A detecti
 | `/snapshots/<name>` | A specific saved snapshot |
 | `/metrics` | Prometheus exposition format — every series carries a `camera` label |
 | `/healthz` | 200 if a frame arrived in the last 10s, else 503 |
-| `/api/config` | GET current settings; POST to change them live |
+| `/api/config` | GET current settings; POST to change them live, globally or per camera |
 | `/api/snapshot` | POST to save the current frame to disk on demand |
 
 ```bash
@@ -242,6 +277,14 @@ curl -X POST http://<pi-ip>:8080/api/config \
 curl -X POST http://<pi-ip>:8080/api/config \
      -H 'Content-Type: application/json' \
      -d '{"cameras": {"1": {"detect": true}}}'
+
+# Re-resolution camera 0 and give it a false-colour view
+curl -X POST http://<pi-ip>:8080/api/config \
+     -H 'Content-Type: application/json' \
+     -d '{"cameras": {"0": {"width": 1332, "height": 990, "effect": "heat"}}}'
+
+# What modes does each sensor actually have?
+curl -s http://<pi-ip>:8080/cameras | python3 -m json.tool
 ```
 
 ### Webhook payload
@@ -349,7 +392,7 @@ pip install flask opencv-python numpy
 ./tests/run_tests.sh
 ```
 
-It starts **two** fake cameras — the stand-in answers `--list-cameras` with an IMX708 on port 0 and an IMX477 on port 1 — so camera enumeration, per-camera config, and switching detection on and off at runtime are all covered. It verifies the letterbox round trip, track ID stability, live reconfiguration, multi-client streaming, the event log, and clean shutdown. It writes `tests/output_sample.jpg` so you can eyeball the annotation.
+It starts **two** fake cameras — the stand-in answers `--list-cameras` with an IMX708 on port 0 and an IMX477 on port 1, each advertising sensor modes — so camera enumeration, mode parsing, per-camera config, live reconfiguration and switching detection on and off at runtime are all covered. It also seeds a pre-multi-camera `events.db` so the schema migration is exercised, and checks that changing a camera's resolution restarts only that camera and is not counted as a capture error. It verifies the letterbox round trip, track ID stability, live reconfiguration, multi-client streaming, the event log, and clean shutdown. It writes `tests/output_sample.jpg` so you can eyeball the annotation.
 
 ## Service Management
 
@@ -425,6 +468,24 @@ python3 hailo_tracker.py --list-cameras
 **Second camera never appears** — if `--list-cameras` shows only one, the Pi isn't seeing the module: check the ribbon seating and orientation, and that no `dtoverlay` in `/boot/firmware/config.txt` is pinning a single sensor. `camera_auto_detect=0` with a single explicit `dtoverlay=imx708` will hide the second port. If `--list-cameras` shows both but only one streams, force it with `CAMERAS=0,1` and read the log for that camera's `rpicam-vid` line and exit code.
 
 **One camera restarts in a loop** — read the `[cam1] error:` lines. `rpicam-vid exited 1` immediately after start is almost always an unsupported flag for that sensor. Autofocus is handled automatically for the sensors listed above; for anything else, set `CAM1_AUTOFOCUS=` (empty) to drop it.
+
+**A camera panel says NO SIGNAL** — that camera is configured and `rpicam-vid` is running, but it has never delivered a frame. The tracker says so after 12 seconds and dumps the last 20 lines `rpicam-vid` wrote to stderr:
+
+```bash
+journalctl -u hailo-tracker -b | grep -A22 '\[cam0\]'
+```
+
+**`Camera frontend has timed out!` / `Dequeue timer ... has expired`** — the sensor is answering on I²C (it enumerated, its modes were read, the stream was configured) but no pixels are arriving on the CSI-2 lanes. Those are two different physical paths, and this failure means the slow one works and the fast one doesn't.
+
+Reach for a **full power-down before anything else**:
+
+```bash
+sudo poweroff
+```
+
+then pull the power for 30 seconds. A warm `reboot` never drops the 3.3V rail on the camera connector, so a sensor or CSI PHY latched in a bad state survives every reboot you throw at it — and a camera that fails this way will keep failing across any number of restarts while looking, in software, exactly like a cable fault.
+
+If a cold boot brings it back and it lapses again later, that is a marginal connection rather than a dead one: reseat both ends of the ribbon, and swap the good camera's cable onto the bad one to tell cable from module. No resolution, mode or framerate setting will help — nothing above the physical layer can conjure data that isn't on the wire. Changing the request only *looks* like it helps, because the fault is intermittent.
 
 **No `.hef`** — run `./download_model.sh`, or set `HEF_PATH`.
 

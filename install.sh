@@ -109,10 +109,27 @@ if [ ! -f "${CONF_FILE}" ]; then
 #CAM_GAIN=2                 # blank = auto
 #CAM_EV=0
 #CAM_DENOISE=off
+# Both flips together = 180 degrees, and they are the cheap way to do it:
+# they go to rpicam-vid as --hflip/--vflip and the ISP applies them. CAM_ROTATE
+# below is an OpenCV rotate on every frame in Python, so keep that one for 90
+# and 270, which flips cannot express.
 #CAM_HFLIP=false
 #CAM_VFLIP=false
 #CAM_EXTRA_ARGS=            # anything else to pass to rpicam-vid
 #CAM_ROTATE=0               # 0, 90, 180 or 270 degrees clockwise
+
+# Image controls. Blank means "don't pass the flag at all", which is not the
+# same as passing a neutral value -- blank leaves the ISP on its own default.
+#CAM_BRIGHTNESS=            # -1.0 .. 1.0
+#CAM_CONTRAST=              # 1.0 is normal
+#CAM_SATURATION=            # 0.0 is mono, 1.0 is normal
+#CAM_SHARPNESS=             # 1.0 is normal
+#CAM_AWB=                   # auto|incandescent|tungsten|fluorescent|indoor|daylight|cloudy
+
+# Software effect, applied to the finished frame after inference -- detection
+# always runs on clean video. Costs CPU per frame; edges and heat are the
+# expensive ones at 720p30.
+#CAM_EFFECT=none            # none|gray|invert|edges|heat|sharpen
 #CAM_DETECT=true            # run the NPU on this camera
 #CAM_INFER_EVERY_N=1
 
@@ -126,6 +143,8 @@ if [ ! -f "${CONF_FILE}" ]; then
 #CAM1_AUTOFOCUS=            # dropped automatically for sensors with no AF
 #CAM1_SHUTTER=20000
 #CAM1_GAIN=2
+#CAM1_HFLIP=false
+#CAM1_VFLIP=false
 #CAM1_ROTATE=0
 #CAM1_DETECT=false
 #CAM1_INFER_EVERY_N=1
