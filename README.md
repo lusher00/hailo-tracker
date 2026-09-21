@@ -491,7 +491,7 @@ If a cold boot brings it back and it lapses again later, that is a marginal conn
 
 **Boxes in the wrong place** — the model's input size doesn't match `NN_SIZE`. The startup log warns when it can detect this.
 
-**Boxes mirrored across the diagonal** — your model emits `[y1,x1,y2,x2]` rather than `[x1,y1,x2,y2]`. Set `BOX_ORDER=yxyx`.
+**Boxes mirrored across the diagonal** — the box order doesn't match your model. Hailo's NMS output is `[y1,x1,y2,x2]` (the default, `BOX_ORDER=yxyx`); a model that emits `[x1,y1,x2,y2]` needs `BOX_ORDER=xyxy`.
 
 **Everything's blurry** — see the camera notes; `CAM_AUTOFOCUS=manual` without `CAM_LENS_POSITION` is the usual cause.
 

@@ -230,7 +230,7 @@ curl -s http://localhost:8080/stats/1 | python3 -m json.tool
 
 ### Boxes are in the wrong place
 
-- Mirrored across the diagonal → set `BOX_ORDER=yxyx`.
+- Mirrored across the diagonal → the box order doesn't match the model. The default `BOX_ORDER=yxyx` matches Hailo's NMS output; try `BOX_ORDER=xyxy` only for a model that differs.
 - Uniformly offset or scaled → `NN_SIZE` doesn't match the model's input; the startup log warns about this.
 - Rotated → set `CAM_ROTATE` (or `CAM1_ROTATE` for the second camera), not `CAM_HFLIP`/`CAM_VFLIP`. The old `ROTATE_DEGREES` name still works for camera 0.
 

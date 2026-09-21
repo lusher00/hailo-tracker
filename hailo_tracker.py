@@ -102,10 +102,11 @@ HEF_CANDIDATES = [
     "/usr/share/hailo-models/yolov8s.hef",
 ]
 
-# Hailo's NMS post-process emits either [x1,y1,x2,y2,score] or [y1,x1,y2,x2,score]
-# depending on how the model was compiled. If every box looks mirrored across the
-# diagonal, flip this to "yxyx".
-BOX_ORDER = _env("BOX_ORDER", "xyxy")
+# Hailo's on-chip NMS post-process (the *_nms_postprocess output of the model-zoo
+# YOLO HEFs) emits each box as [y_min, x_min, y_max, x_max, score], normalised
+# 0..1. Reading it as x-first swaps the axes: confident detections drawn in the
+# wrong place. Override with BOX_ORDER=xyxy only for a model known to differ.
+BOX_ORDER = _env("BOX_ORDER", "yxyx")
 
 # ---------- detection ----------
 CONF_THRESH = _env("CONF_THRESH", 0.40, float)

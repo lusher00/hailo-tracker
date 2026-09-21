@@ -104,6 +104,7 @@ class InferVStreams:
             x1, x2 = xs.min() / size, xs.max() / size
             y1, y2 = ys.min() / size, ys.max() / size
             conf = 0.93 if class_id == 15 else 0.81
-            per_class[class_id] = np.array([[x1, y1, x2, y2, conf]], dtype=np.float32)
+            # Same layout as the real HailoRT NMS output: y first.
+            per_class[class_id] = np.array([[y1, x1, y2, x2, conf]], dtype=np.float32)
 
         return {"yolov8s/yolov8_nms_postprocess": [per_class]}

@@ -181,7 +181,7 @@ if [ ! -f "${CONF_FILE}" ]; then
 # ---------- model ----------
 #HEF_PATH=/usr/share/hailo-models/yolov8s_h8l.hef
 #NN_SIZE=640
-#BOX_ORDER=xyxy             # flip to yxyx if boxes look mirrored diagonally
+#BOX_ORDER=yxyx             # Hailo NMS order; xyxy only if boxes look mirrored diagonally
 ENVCONF
 else
     echo "Keeping existing ${CONF_FILE}"
