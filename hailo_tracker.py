@@ -57,6 +57,7 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 
 from tracker import Tracker
 from events import EventLog, SnapshotStore, Webhook
+from follow import Follower, FollowConfig
 import webui
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1040,6 +1041,10 @@ SNAPSHOTS = SnapshotStore(SNAPSHOT_DIR, SNAPSHOT_MAX_FILES, SNAPSHOT_COOLDOWN,
                           enabled=SNAPSHOT_ON_DETECT)
 HOOK = Webhook(WEBHOOK_URL)
 
+# Target following -> drive commands for the Bone via robot-linkd. Off until
+# enabled (FOLLOW_ENABLED=1 or POST /api/follow); the Bone gates it again.
+FOLLOW = Follower(FollowConfig.from_env(_env), log=log)
+
 
 class _FakeTrack:
     """Duck-typed stand-in so draw_track works with tracking disabled."""
@@ -1371,6 +1376,7 @@ class CameraPipeline:
                     visible = [t for t in tracks
                                if (t.confirmed or not confirmed_only)]
                     self._handle_track_events(tracks)
+                    FOLLOW.update(self.index, tracks, w, h)
                 else:
                     # Tracking off: synthesise throwaway objects so drawing is
                     # uniform.
@@ -1674,6 +1680,16 @@ def api_config():
                     "config": _config_snapshot()})
 
 
+@app.route("/api/follow", methods=["GET", "POST"])
+def api_follow():
+    if request.method == "GET":
+        return jsonify(FOLLOW.status())
+    changed = FOLLOW.apply(request.get_json(silent=True) or {})
+    if changed:
+        log(f"[follow] updated: {', '.join(sorted(changed))}")
+    return jsonify({"ok": True, "changed": sorted(changed), "follow": FOLLOW.status()})
+
+
 @app.route("/cameras")
 def cameras():
     return jsonify([c.config_dict() for c in CAMS.values()])
@@ -1935,6 +1951,7 @@ def _shutdown_all(signum=None, _frame=None):
         except Exception:
             pass
 
+    FOLLOW.stop()           # one last explicit stop to the Bone
     EVENTS.close()          # flushes pending rows before we go
     HOOK.close()
     shutdown_hailo()
@@ -1976,6 +1993,7 @@ def main():
     configs = build_camera_configs()
     init_hailo()
     start_cameras(configs)
+    FOLLOW.start()
 
     cfg = SETTINGS.snapshot()
     tracking = ", ".join(cfg["tracked_classes"]) if cfg["tracked_classes"] else "all 80 classes"
@@ -1990,6 +2008,9 @@ def main():
           f"Snapshots: {'on' if SNAPSHOTS.enabled else 'off'}")
     if ROI_NORM is not None:
         print(f"  ROI:      {len(ROI_NORM)}-point polygon active")
+    fc = FOLLOW.cfg
+    print(f"  Follow:   {'ON' if fc.enabled else 'off'}  camera {fc.camera}, "
+          f"{', '.join(fc.classes) or 'any class'} -> {fc.socket_path}")
     print(f"\n  http://{local_ip()}:{HTTP_PORT}\n")
 
     try:

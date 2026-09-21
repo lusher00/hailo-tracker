@@ -182,6 +182,18 @@ if [ ! -f "${CONF_FILE}" ]; then
 #HEF_PATH=/usr/share/hailo-models/yolov8s_h8l.hef
 #NN_SIZE=640
 #BOX_ORDER=yxyx             # Hailo NMS order; xyxy only if boxes look mirrored diagonally
+
+# ---------- following (drive commands to the Bone via robot-linkd) ----------
+#FOLLOW_ENABLED=false       # also switchable live: POST /api/follow {"enabled":true}
+#FOLLOW_CLASSES=person      # empty = any class
+#FOLLOW_CAMERA=0
+#FOLLOW_TARGET_SIZE=0.10    # box area / frame area to hold station at
+#FOLLOW_STEER_GAIN=1.0
+#FOLLOW_DRIVE_GAIN=1.0
+#FOLLOW_MAX_STEER=0.5
+#FOLLOW_MAX_DRIVE=0.3
+#FOLLOW_TTL_MS=300
+#ROBOT_LINK_SOCKET=/run/robot-link/pi.sock
 ENVCONF
 else
     echo "Keeping existing ${CONF_FILE}"

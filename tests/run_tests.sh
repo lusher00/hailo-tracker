@@ -5,4 +5,5 @@
 #   ./tests/run_tests.sh
 set -e
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+python3 tests/test_follow.py
 python3 tests/test_pipeline.py "$@"

@@ -228,6 +228,33 @@ The tracker associates detections across frames by IoU overlap, with constant-ve
 
 Set `TRACK_ENABLED=false` (or `--no-track`) for plain per-frame detection with no IDs.
 
+### Following
+
+With robot-link running, the tracker can steer the robot toward a target.
+It locks onto the largest (nearest) confirmed track of `FOLLOW_CLASSES` and
+keeps that track ID while it lasts, then turns the box into a normalised drive
+command: `x` from the horizontal offset (positive turns right), `y` from the
+box's linear size against `FOLLOW_TARGET_SIZE` (positive is forward, negative
+backs off when too close), with drive reduced while the target is off centre.
+About 10 commands a second go to robot-linkd's local socket
+(`ROBOT_LINK_SOCKET`), which sends them to the Bone.
+
+The Pi only proposes. balance_bot keeps balancing, applies Pi commands only
+while its Pi-drive gate is open and the SBUS stick is centred, and treats an
+expired command (`FOLLOW_TTL_MS`) as a centred stick. Drive up to something by
+hand, let go of the stick, and the tracker carries on.
+
+Following is off until enabled:
+
+```bash
+curl -s -X POST localhost:8080/api/follow -H 'Content-Type: application/json' \
+     -d '{"enabled": true, "classes": ["person"], "max_drive": 0.2}'
+curl -s localhost:8080/api/follow       # target, command, counters, config
+```
+
+When disabled it sends one explicit stop and then nothing. If detections stop
+arriving for `lost_s` it sends zeros (hold still) until they return.
+
 ### Region of interest
 
 Ignore everything outside a polygon — a food bowl, a doorway, your own garden but not the pavement:
@@ -261,6 +288,7 @@ Coordinates are normalised 0–1, so they survive a resolution change. A detecti
 | `/metrics` | Prometheus exposition format — every series carries a `camera` label |
 | `/healthz` | 200 if a frame arrived in the last 10s, else 503 |
 | `/api/config` | GET current settings; POST to change them live, globally or per camera |
+| `/api/follow` | GET follow target, command and counters; POST to enable/disable or change follow settings |
 | `/api/snapshot` | POST to save the current frame to disk on demand |
 
 ```bash

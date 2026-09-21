@@ -122,6 +122,37 @@ def main():
     hef = os.path.join(workdir, "yolov8s.hef")
     open(hef, "wb").write(b"\x00")
 
+    # Stand-in for robot-linkd's local socket: collect every drive command the
+    # follower publishes, so the whole tracks -> drive path is under test.
+    import socket as _socket
+    import threading as _threading
+    link_path = os.path.join(workdir, "pi.sock")
+    link_srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    link_srv.bind(link_path)
+    link_srv.listen(4)
+    drive_cmds = []
+
+    def _link_serve():
+        while True:
+            try:
+                conn, _ = link_srv.accept()
+            except OSError:
+                return
+            buf = b""
+            while True:
+                try:
+                    chunk = conn.recv(4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    drive_cmds.append(json.loads(line))
+            conn.close()
+    _threading.Thread(target=_link_serve, daemon=True).start()
+
     env = dict(os.environ)
     env["PATH"] = bindir + os.pathsep + env["PATH"]
     env["PYTHONPATH"] = workdir + os.pathsep + ROOT + os.pathsep + env.get("PYTHONPATH", "")
@@ -140,6 +171,10 @@ def main():
         "CAM1_FRAMERATE": "15",
         "DETECTION_LOG": "true",
         "PYTHONUNBUFFERED": "1",
+        "FOLLOW_ENABLED": "1",
+        "FOLLOW_CLASSES": "person",
+        "FOLLOW_CAMERA": "0",
+        "ROBOT_LINK_SOCKET": link_path,
     })
 
     # Seed the event database with the pre-multi-camera schema and a row.
@@ -320,6 +355,33 @@ def main():
         else:
             check("letterbox round trip puts the box back where it belongs", False,
                   "no person track")
+
+        # ---------------- following ----------------
+        # The person block sits left of centre and smaller than the default
+        # target size, so the follower must steer left and drive forward.
+        print("\nFollowing")
+        time.sleep(1.0)
+        status, follow = get_json("/api/follow")
+        check("GET /api/follow", status == 200)
+        tgt = follow.get("target") or {}
+        check("follower locked on the person", tgt.get("class") == "person", str(tgt))
+        live = [c for c in drive_cmds if c.get("op") == "drive" and (c["x"] or c["y"])]
+        check("drive commands reach the robot-link socket", len(live) > 3,
+              f"{len(drive_cmds)} received")
+        if live:
+            last = live[-1]
+            check("steers toward the target (left)", last["x"] < 0, str(last))
+            check("drives toward a small target (forward)", last["y"] > 0, str(last))
+            check("commands carry a ttl", 50 <= last["ttl_ms"] <= 1000, str(last))
+        status, res = post_json("/api/follow", {"enabled": False})
+        check("POST /api/follow can disable following",
+              status == 200 and res["follow"]["enabled"] is False)
+        time.sleep(0.5)
+        n = len(drive_cmds)
+        time.sleep(0.5)
+        check("disabled follower goes quiet after one stop",
+              len(drive_cmds) == n and drive_cmds and drive_cmds[-1]["x"] == 0
+              and drive_cmds[-1]["y"] == 0, f"{len(drive_cmds) - n} more, last {drive_cmds[-1:]}")
 
         # IDs must survive across frames, not churn every frame
         ids_before = {t["class"]: t["id"] for t in tracks}
